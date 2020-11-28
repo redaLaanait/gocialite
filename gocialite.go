@@ -1,55 +1,84 @@
 package gocialite
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/gob"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 
-	"github.com/danilopolani/gocialite/drivers"
-	"github.com/danilopolani/gocialite/structs"
+	"github.com/redaLaanait/gocialite/v2/drivers"
+	"github.com/redaLaanait/gocialite/v2/stores"
+	"github.com/redaLaanait/gocialite/v2/structs"
 	"golang.org/x/oauth2"
 	"gopkg.in/oleiade/reflections.v1"
 )
 
 // Dispatcher allows to safely issue concurrent Gocials
 type Dispatcher struct {
-	mu sync.RWMutex
-	g  map[string]*Gocial
+	store stores.GocialStore
 }
 
 // NewDispatcher creates new Dispatcher
-func NewDispatcher() *Dispatcher {
-	return &Dispatcher{g: make(map[string]*Gocial)}
+func NewDispatcher(store stores.GocialStore) *Dispatcher {
+	if store == nil {
+		store = stores.NewMemoryStore()
+	}
+	return &Dispatcher{store: store}
+}
+
+func encodeGocial(g *Gocial) ([]byte, error) {
+	buf := new(bytes.Buffer)
+	enc := gob.NewEncoder(buf)
+
+	if err := enc.Encode(g); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func decodeGocial(b []byte, g *Gocial) error {
+	buf := bytes.NewBuffer(b)
+	enc := gob.NewDecoder(buf)
+
+	return enc.Decode(g)
 }
 
 // New Gocial instance
-func (d *Dispatcher) New() *Gocial {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+func (d *Dispatcher) New() (*Gocial, error) {
 	state := randToken()
 	g := &Gocial{state: state}
-	d.g[state] = g
-	return g
+
+	b, err := encodeGocial(g)
+	if err != nil {
+		return nil, fmt.Errorf("encode Gocial failed: %w", err)
+	}
+	if err := d.store.Save(state, b); err != nil {
+		return nil, fmt.Errorf("save state failed: %w", err)
+	}
+
+	return g, nil
 }
 
 // Handle callback. Can be called only once for given state.
 func (d *Dispatcher) Handle(state, code string) (*structs.User, *oauth2.Token, error) {
-	d.mu.RLock()
-	g, ok := d.g[state]
-	d.mu.RUnlock()
-	if !ok {
+	b, err := d.store.Get(state)
+	if err != nil {
 		return nil, nil, fmt.Errorf("invalid CSRF token: %s", state)
 	}
-	err := g.Handle(state, code)
-	d.mu.Lock()
-	delete(d.g, state)
-	d.mu.Unlock()
+	g := &Gocial{}
+	if err = decodeGocial(b, g); err != nil {
+		return nil, nil, err
+	}
+
+	err = g.Handle(state, code)
+	err = d.store.Delete(state)
+
 	return &g.User, g.Token, err
 }
 
@@ -231,7 +260,7 @@ func jsonDecode(js []byte) (map[string]interface{}, error) {
 	if err := decoder.Decode(&decoded); err != nil {
 		return nil, err
 	}
-	
+
 	return decoded, nil
 }
 

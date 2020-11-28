@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/danilopolani/gocialite/structs"
+	"github.com/redaLaanait/gocialite/v2/structs"
 	"golang.org/x/oauth2/github"
 )
 
