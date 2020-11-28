@@ -10,7 +10,7 @@ type memory struct {
 	g  map[string][]byte
 }
 
-// NewMemoryStore return a poitner of memory Gocial instance store
+// NewMemoryStore returns a poitner of memory Gocial instance store
 func NewMemoryStore() GocialStore {
 	return &memory{g: make(map[string][]byte)}
 }
