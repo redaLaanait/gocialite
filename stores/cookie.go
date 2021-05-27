@@ -35,7 +35,7 @@ func (s *CookieStore) Save(state string, b []byte) error {
 		Path:     "/",
 		Secure:   true,
 		HttpOnly: true,
-		Expires:  time.Now().Add(3 * time.Minute),
+		Expires:  time.Now().Add(1 * time.Minute),
 	}
 	s.CookieToSet = cookie
 
