@@ -1,10 +1,8 @@
 package gocialite
 
 import (
-	"bytes"
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/gob"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -19,54 +17,81 @@ import (
 	"gopkg.in/oleiade/reflections.v1"
 )
 
-// Dispatcher allows to safely issue concurrent Gocials
-type Dispatcher struct {
+type Dispatcher interface {
+	New() *Gocial
+	Handle(state, code string) (*structs.User, *oauth2.Token, error)
+	SetStore(store stores.GocialStore) Dispatcher
+}
+
+type dispatcher struct {
 	store stores.GocialStore
 }
 
 // NewDispatcher creates new Dispatcher
-func NewDispatcher(store stores.GocialStore) *Dispatcher {
+func NewDispatcher(store stores.GocialStore) Dispatcher {
 	if store == nil {
 		store = stores.NewMemoryStore()
 	}
-	return &Dispatcher{store: store}
+	return &dispatcher{store: store}
 }
 
 func encodeGocial(g *Gocial) ([]byte, error) {
-	buf := new(bytes.Buffer)
-	enc := gob.NewEncoder(buf)
-
-	if err := enc.Encode(g); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
+	return json.Marshal(g)
 }
 
 func decodeGocial(b []byte, g *Gocial) error {
-	buf := bytes.NewBuffer(b)
-	enc := gob.NewDecoder(buf)
+	return json.Unmarshal(b, g)
+}
 
-	return enc.Decode(g)
+type GocialAlias Gocial
+
+type GocialJSON struct {
+	*GocialAlias
+	Driver, State string
+	Scopes        []string
+	Conf          *oauth2.Config
+}
+
+func (g *Gocial) MarshalJSON() ([]byte, error) {
+	return json.Marshal(&GocialJSON{
+		GocialAlias: (*GocialAlias)(g),
+		Driver:      g.driver,
+		State:       g.state,
+		Scopes:      g.scopes,
+		Conf:        g.conf,
+	})
+}
+
+func (g *Gocial) UnmarshalJSON(data []byte) error {
+	temp := &GocialJSON{
+		GocialAlias: (*GocialAlias)(g),
+	}
+	if err := json.Unmarshal(data, &temp); err != nil {
+		return err
+	}
+
+	*g = (Gocial)(*(temp).GocialAlias)
+	g.driver = temp.Driver
+	g.state = temp.State
+	g.scopes = temp.Scopes
+	g.conf = temp.Conf
+
+	return nil
 }
 
 // New Gocial instance
-func (d *Dispatcher) New() (*Gocial, error) {
+func (d *dispatcher) New() *Gocial {
 	state := randToken()
-	g := &Gocial{state: state}
+	return &Gocial{state: state, store: d.store}
+}
 
-	b, err := encodeGocial(g)
-	if err != nil {
-		return nil, fmt.Errorf("encode Gocial failed: %w", err)
-	}
-	if err := d.store.Save(state, b); err != nil {
-		return nil, fmt.Errorf("save state failed: %w", err)
-	}
-
-	return g, nil
+func (d *dispatcher) SetStore(store stores.GocialStore) Dispatcher {
+	d.store = store
+	return d
 }
 
 // Handle callback. Can be called only once for given state.
-func (d *Dispatcher) Handle(state, code string) (*structs.User, *oauth2.Token, error) {
+func (d *dispatcher) Handle(state, code string) (*structs.User, *oauth2.Token, error) {
 	b, err := d.store.Get(state)
 	if err != nil {
 		return nil, nil, fmt.Errorf("invalid CSRF token: %s", state)
@@ -75,7 +100,6 @@ func (d *Dispatcher) Handle(state, code string) (*structs.User, *oauth2.Token, e
 	if err = decodeGocial(b, g); err != nil {
 		return nil, nil, err
 	}
-
 	err = g.Handle(state, code)
 	err = d.store.Delete(state)
 
@@ -89,6 +113,8 @@ type Gocial struct {
 	conf          *oauth2.Config
 	User          structs.User
 	Token         *oauth2.Token
+
+	store stores.GocialStore
 }
 
 func init() {
@@ -163,6 +189,15 @@ func (g *Gocial) Redirect(clientID, clientSecret, redirectURL string) (string, e
 		RedirectURL:  redirectURL,
 		Scopes:       g.scopes,
 		Endpoint:     endpointMap[g.driver],
+	}
+
+	// Persist gocial instance
+	b, err := encodeGocial(g)
+	if err != nil {
+		return "", fmt.Errorf("encode Gocial instance failed: %w", err)
+	}
+	if err := g.store.Save(g.state, b); err != nil {
+		return "", fmt.Errorf("save state failed: %w", err)
 	}
 
 	return g.conf.AuthCodeURL(g.state), nil
